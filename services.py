@@ -1,4 +1,4 @@
-# services.py
+# services.py - Updated process_excel method
 import pandas as pd
 import os
 import uuid
@@ -15,7 +15,7 @@ class ExcelProcessor:
     def __init__(self):
         pass
 
-    def preview_excel(self, file_path: str, max_preview_rows: int = 10) -> ExcelPreview:
+    def preview_excel(self, file_path: str, max_preview_rows: int = 15) -> ExcelPreview:
         """Preview Excel file structure to help user identify data start position"""
         try:
             # Read all sheets
@@ -33,7 +33,7 @@ class ExcelProcessor:
                 total_rows[sheet_name] = len(df)
                 total_cols[sheet_name] = len(df.columns)
 
-                # Get preview data (first 10 rows)
+                # Get preview data (first rows)
                 preview_rows = []
                 for i in range(min(max_preview_rows, len(df))):
                     row = []
@@ -60,36 +60,60 @@ class ExcelProcessor:
     def process_excel(self, file_path: str, start_row: int, start_col: int, sheet_name: str = None) -> pd.DataFrame:
         """Process Excel data starting from specified row and column"""
         try:
+            print(f"Processing Excel: start_row={start_row}, start_col={start_col}, sheet={sheet_name}")
+
             # Read the Excel file
             if sheet_name:
                 df = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
             else:
                 df = pd.read_excel(file_path, header=None)
 
-            # Extract data starting from specified position
-            data_df = df.iloc[start_row:, start_col:]
+            print(f"Excel shape: {df.shape}")
+            print(
+                f"Row {start_row} content: {df.iloc[start_row].tolist() if start_row < len(df) else 'Row out of bounds'}")
 
-            # Use first row as headers
-            headers = data_df.iloc[0].values
-            data_df = data_df[1:].copy()
-            data_df.columns = headers
+            # Validate start position
+            if start_row >= len(df):
+                raise Exception(f"Start row {start_row} is beyond the data range. Excel has {len(df)} rows.")
+
+            if start_col >= len(df.columns):
+                raise Exception(
+                    f"Start column {start_col} is beyond the data range. Excel has {len(df.columns)} columns.")
+
+            # Extract headers from the start row
+            header_row = df.iloc[start_row, start_col:].values
+            print(f"Header row extracted: {header_row}")
+
+            # Extract data starting from the next row
+            if start_row + 1 >= len(df):
+                raise Exception(f"No data rows found after header row {start_row}")
+
+            data_df = df.iloc[start_row + 1:, start_col:].copy()
+            print(f"Data shape after extraction: {data_df.shape}")
 
             # Clean up headers (remove NaN, strip whitespace)
             clean_headers = []
-            for header in data_df.columns:
-                if pd.isna(header):
-                    clean_headers.append(f"Column_{len(clean_headers)}")
+            for i, header in enumerate(header_row):
+                if pd.isna(header) or str(header).strip() == '':
+                    clean_headers.append(f"Column_{start_col + i}")
                 else:
                     clean_headers.append(str(header).strip())
 
-            data_df.columns = clean_headers
+            print(f"Clean headers: {clean_headers}")
+
+            # Set column names
+            data_df.columns = clean_headers[:len(data_df.columns)]
 
             # Reset index
             data_df.reset_index(drop=True, inplace=True)
 
+            print(f"Final DataFrame columns: {list(data_df.columns)}")
+            print(f"First few rows: {data_df.head().to_dict('records')}")
+
             return data_df
 
         except Exception as e:
+            print(f"Error in process_excel: {str(e)}")
             raise Exception(f"Error processing Excel data: {str(e)}")
 
 
@@ -101,24 +125,42 @@ class ImageProcessor:
         """Process all images in a directory and return metadata"""
         image_data = {}
 
+        print(f"Processing images in directory: {image_dir}")
+
         if not os.path.exists(image_dir):
+            print(f"Image directory does not exist: {image_dir}")
             return image_data
 
-        for filename in os.listdir(image_dir):
+        # List all files in directory
+        try:
+            all_files = os.listdir(image_dir)
+            print(f"Files found in directory: {all_files}")
+        except Exception as e:
+            print(f"Error listing directory {image_dir}: {str(e)}")
+            return image_data
+
+        for filename in all_files:
             file_path = os.path.join(image_dir, filename)
+            print(f"Checking file: {file_path}")
 
             if not os.path.isfile(file_path):
+                print(f"Not a file, skipping: {file_path}")
                 continue
 
             file_ext = Path(filename).suffix.lower()
+            print(f"File extension: {file_ext}")
+
             if file_ext not in self.supported_formats:
+                print(f"Unsupported format, skipping: {filename}")
                 continue
 
             try:
+                print(f"Attempting to open image: {file_path}")
                 with Image.open(file_path) as img:
                     # Get image info
                     dimensions = img.size  # (width, height)
                     format_type = img.format
+                    print(f"Image opened successfully: {dimensions}, {format_type}")
 
                 # Get file size in MB
                 file_size = os.path.getsize(file_path) / (1024 * 1024)
@@ -131,13 +173,14 @@ class ImageProcessor:
                 )
 
                 image_data[filename] = image_info
+                print(f"Successfully processed image: {filename}")
 
             except Exception as e:
                 print(f"Error processing image {filename}: {str(e)}")
                 continue
 
+        print(f"Total images processed: {len(image_data)}")
         return image_data
-
 
 class DataMapper:
     def __init__(self):
@@ -192,11 +235,23 @@ class DataMapper:
         families = set()
         successful_mappings = 0
 
-        # Check if ref_photo_column exists
+        print(f"Available columns in DataFrame: {list(excel_data.columns)}")
+        print(f"Looking for ref_photo_column: '{ref_photo_column}'")
+
+        # Check if ref_photo_column exists (exact match first)
         if ref_photo_column not in excel_data.columns:
-            available_columns = list(excel_data.columns)
-            raise Exception(
-                f"Reference photo column '{ref_photo_column}' not found. Available columns: {available_columns}")
+            # Try case-insensitive match
+            column_mapping = {col.lower().strip(): col for col in excel_data.columns}
+            ref_photo_lower = ref_photo_column.lower().strip()
+
+            if ref_photo_lower in column_mapping:
+                actual_column = column_mapping[ref_photo_lower]
+                print(f"Found case-insensitive match: '{ref_photo_column}' -> '{actual_column}'")
+                ref_photo_column = actual_column
+            else:
+                available_columns = list(excel_data.columns)
+                raise Exception(
+                    f"Reference photo column '{ref_photo_column}' not found. Available columns: {available_columns}")
 
         for index, row in excel_data.iterrows():
             try:
@@ -210,23 +265,24 @@ class DataMapper:
                     print(f"No matching image found for reference: {ref_photo}")
                     continue
 
-                # Extract plant data with fallbacks
+                # Extract plant data with fallbacks and flexible column mapping
                 plant_data = {
                     'id': str(uuid.uuid4()),
                     'refPhoto': str(ref_photo) if not pd.isna(ref_photo) else f"ref_{index}",
                     'yProj': self._safe_float_convert(
-                        row.get('Y_Proj', row.get('yProj', row.get('Y', row.get('Latitude', 0))))),
+                        self._get_column_value(row, ['y_proj', 'Y_Proj', 'yProj', 'Y', 'Latitude'])),
                     'xProj': self._safe_float_convert(
-                        row.get('X_Proj', row.get('xProj', row.get('X', row.get('Longitude', 0))))),
-                    'speciesName': str(row.get('Species Name', row.get('speciesName', row.get('Species', row.get('Name',
-                                                                                                                 'Unknown Species'))))),
-                    'family': str(row.get('Family', row.get('family', 'Unknown Family'))),
+                        self._get_column_value(row, ['x_proj', 'X_Proj', 'xProj', 'X', 'Longitude'])),
+                    'speciesName': str(self._get_column_value(row, ['nom de l\'espèce', 'Species Name', 'speciesName',
+                                                                    'Species', 'Name'], 'Unknown Species')),
+                    'family': str(self._get_column_value(row, ['famille', 'Family', 'family'], 'Unknown Family')),
                     'formation': str(
-                        row.get('Formation', row.get('formation', row.get('Habitat', 'Unknown Formation')))),
-                    'slope': self._safe_float_convert(row.get('Slope', row.get('slope', None))),
-                    'exposure': str(row.get('Exposure', row.get('exposure', row.get('Aspect', 'Unknown')))),
+                        self._get_column_value(row, ['formation', 'Formation', 'Habitat'], 'Unknown Formation')),
+                    'slope': self._safe_float_convert(self._get_column_value(row, ['pente', 'Slope', 'slope'])),
+                    'exposure': str(
+                        self._get_column_value(row, ['exposition', 'Exposure', 'exposure', 'Aspect'], 'Unknown')),
                     'altitude': self._safe_float_convert(
-                        row.get('Altitude', row.get('altitude', row.get('Elevation', 0)))),
+                        self._get_column_value(row, ['Altitude', 'altitude', 'Elevation'], 0)),
                     'imagePath': f"{session_id}/{matching_image}",
                     'imageSize': image_data[matching_image].size_mb
                 }
@@ -256,9 +312,16 @@ class DataMapper:
             plants=plants
         )
 
+    def _get_column_value(self, row, possible_columns: List[str], default=None):
+        """Get value from row using multiple possible column names"""
+        for col in possible_columns:
+            if col in row.index and not pd.isna(row[col]):
+                return row[col]
+        return default
+
     def _safe_float_convert(self, value) -> Optional[float]:
         """Safely convert value to float"""
-        if pd.isna(value) or value == '':
+        if pd.isna(value) or value == '' or value is None:
             return None
         try:
             return float(value)
